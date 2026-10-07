@@ -1,13 +1,18 @@
 import { useState, useEffect } from "react";
 
 const API = "https://job-api-zeek.onrender.com/api";
+const STATUSES = ["Applied", "Interview", "Offer", "Rejected"];
+
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
   const [mode, setMode] = useState("login");
   const [form, setForm] = useState({ name: "", email: "", password: "" });
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const [jobs, setJobs] = useState([]);
   const [job, setJob] = useState({ company: "", role: "" });
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("All");
 
   // One helper for all API calls: adds the token and handles errors
   async function request(path, options = {}) {
@@ -20,11 +25,14 @@ export default function App() {
     });
     if (res.status === 204) return null;
     const data = await res.json();
-    if (!res.ok) throw new Error(data.message || "Something went wrong");
+    if (!res.ok) {
+      const err = new Error(data.message || "Something went wrong");
+      err.status = res.status;
+      throw err;
+    }
     return data;
   }
 
-  // Load jobs when the user logs in
   useEffect(() => {
     if (token) loadJobs();
   }, [token]);
@@ -33,12 +41,15 @@ export default function App() {
     try {
       setJobs(await request("/jobs"));
     } catch (err) {
-      setError(err.message);
+      if (err.status === 401) logout(); // token expired
+      else setError(err.message);
     }
   }
 
-  async function handleAuth() {
+  async function handleAuth(e) {
+    e.preventDefault();
     setError("");
+    setBusy(true);
     try {
       const path = mode === "login" ? "/auth/login" : "/auth/register";
       const data = await request(path, { method: "POST", body: JSON.stringify(form) });
@@ -47,9 +58,11 @@ export default function App() {
     } catch (err) {
       setError(err.message);
     }
+    setBusy(false);
   }
 
-  async function addJob() {
+  async function addJob(e) {
+    e.preventDefault();
     setError("");
     try {
       const created = await request("/jobs", { method: "POST", body: JSON.stringify(job) });
@@ -73,6 +86,7 @@ export default function App() {
   }
 
   async function deleteJob(id) {
+    if (!window.confirm("Delete this job?")) return;
     try {
       await request(`/jobs/${id}`, { method: "DELETE" });
       setJobs(jobs.filter((j) => j._id !== id));
@@ -85,13 +99,14 @@ export default function App() {
     localStorage.removeItem("token");
     setToken(null);
     setJobs([]);
+    setError("");
   }
 
-  // ---------- Not logged in: show login / register ----------
+  // ---------- Not logged in ----------
   if (!token) {
     return (
-      <div style={{ maxWidth: 360, margin: "40px auto" }}>
-        <h2>{mode === "login" ? "Login" : "Register"}</h2>
+      <form className="auth-card" onSubmit={handleAuth}>
+        <h2>{mode === "login" ? "Log in" : "Create account"}</h2>
         {mode === "register" && (
           <input
             placeholder="Name"
@@ -110,46 +125,108 @@ export default function App() {
           value={form.password}
           onChange={(e) => setForm({ ...form, password: e.target.value })}
         />
-        <button onClick={handleAuth}>{mode === "login" ? "Login" : "Create account"}</button>
-        <p style={{ color: "red" }}>{error}</p>
-        <button onClick={() => setMode(mode === "login" ? "register" : "login")}>
-          {mode === "login" ? "Need an account? Register" : "Have an account? Login"}
+        <button disabled={busy}>
+          {busy ? "Please wait..." : mode === "login" ? "Log in" : "Create account"}
         </button>
-      </div>
+        <p className="error">{error}</p>
+        <button
+          type="button"
+          className="link"
+          onClick={() => {
+            setMode(mode === "login" ? "register" : "login");
+            setError("");
+          }}
+        >
+          {mode === "login" ? "Need an account? Register" : "Have an account? Log in"}
+        </button>
+      </form>
     );
   }
 
-  // ---------- Logged in: show jobs ----------
+  // ---------- Logged in ----------
+  const counts = Object.fromEntries(
+    STATUSES.map((s) => [s, jobs.filter((j) => j.status === s).length])
+  );
+
+  const visible = jobs.filter(
+    (j) =>
+      (filter === "All" || j.status === filter) &&
+      `${j.company} ${j.role}`.toLowerCase().includes(search.toLowerCase())
+  );
+
   return (
-    <div style={{ maxWidth: 600, margin: "40px auto" }}>
-      <button onClick={logout}>Logout</button>
-      <h2>My Job Applications</h2>
+    <div className="container">
+      <div className="topbar">
+        <h1>My Job Applications</h1>
+        <button className="ghost" onClick={logout}>Log out</button>
+      </div>
 
-      <input
-        placeholder="Company"
-        value={job.company}
-        onChange={(e) => setJob({ ...job, company: e.target.value })}
-      />
-      <input
-        placeholder="Role"
-        value={job.role}
-        onChange={(e) => setJob({ ...job, role: e.target.value })}
-      />
-      <button onClick={addJob}>Add job</button>
-      <p style={{ color: "red" }}>{error}</p>
+      <div className="stats">
+        {STATUSES.map((s) => (
+          <button
+            key={s}
+            className={`stat ${filter === s ? "active" : ""}`}
+            onClick={() => setFilter(filter === s ? "All" : s)}
+          >
+            <b>{counts[s]}</b>
+            <span>{s}</span>
+          </button>
+        ))}
+      </div>
 
-      {jobs.length === 0 && <p>No jobs yet. Add your first one above.</p>}
+      <form className="add-form" onSubmit={addJob}>
+        <input
+          placeholder="Company"
+          value={job.company}
+          onChange={(e) => setJob({ ...job, company: e.target.value })}
+        />
+        <input
+          placeholder="Role"
+          value={job.role}
+          onChange={(e) => setJob({ ...job, role: e.target.value })}
+        />
+        <button>Add job</button>
+      </form>
+      <p className="error">{error}</p>
 
-      {jobs.map((j) => (
-        <div key={j._id} style={{ borderBottom: "1px solid #ccc", padding: 8 }}>
-          <b>{j.company}</b> - {j.role}{" "}
-          <select value={j.status} onChange={(e) => updateStatus(j._id, e.target.value)}>
-            <option>Applied</option>
-            <option>Interview</option>
-            <option>Offer</option>
-            <option>Rejected</option>
-          </select>{" "}
-          <button onClick={() => deleteJob(j._id)}>Delete</button>
+      <div className="toolbar">
+        <input
+          placeholder="Search company or role"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <select value={filter} onChange={(e) => setFilter(e.target.value)}>
+          <option>All</option>
+          {STATUSES.map((s) => (
+            <option key={s}>{s}</option>
+          ))}
+        </select>
+      </div>
+
+      {visible.length === 0 && (
+        <p className="empty">
+          {jobs.length === 0 ? "No jobs yet. Add your first one above." : "No jobs match your search."}
+        </p>
+      )}
+
+      {visible.map((j) => (
+        <div className="job" key={j._id}>
+          <div>
+            <h3>{j.company}</h3>
+            <p>{j.role}</p>
+          </div>
+          <div className="job-actions">
+            <select
+              className={`badge s-${j.status}`}
+              value={j.status}
+              onChange={(e) => updateStatus(j._id, e.target.value)}
+            >
+              {STATUSES.map((s) => (
+                <option key={s}>{s}</option>
+              ))}
+            </select>
+            <button className="danger" onClick={() => deleteJob(j._id)}>Delete</button>
+          </div>
         </div>
       ))}
     </div>
